@@ -110,9 +110,9 @@ Implement backend with Firebase or Node.js
 
 
 📄 License
-
-This project is licensed under the MIT License.
 You’re free to use, modify, and distribute it with proper credit.
+
+Project URL : https://roadmap.sh/projects/stories-feature
 
 👨‍💻 Author
 
