@@ -1,0 +1,256 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>24hr Stories (client-only)</title>
+  <style>
+    :root{--thumb-size:64px;--gap:10px}
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial; margin:16px; background:#fff}
+    .stories-row{display:flex; gap:var(--gap); align-items:center; padding:12px; border-radius:10px; border:2px solid #2221; overflow:auto}
+    .add-btn{width:var(--thumb-size); height:var(--thumb-size); border-radius:50%; display:flex; align-items:center; justify-content:center; border:2px solid #ccc; flex:0 0 auto; cursor:pointer; background:#fafafa}
+    .thumb{width:var(--thumb-size); height:var(--thumb-size); border-radius:50%; overflow:hidden; flex:0 0 auto; border:2px solid #2221; background:#eee; display:inline-block}
+    .thumb img{width:100%; height:100%; object-fit:cover; display:block}
+    .viewer{position:fixed; inset:0; background:#000; display:none; align-items:center; justify-content:center; z-index:50; flex-direction:column}
+    .viewer.show{display:flex}
+    .viewer-img{max-width:100%; max-height:100%; width:100%; height:100%; object-fit:contain}
+    .progress-bar-row{position:absolute; top:14px; left:14px; right:14px; display:flex; gap:6px}
+    .segment{flex:1; height:3px; background:rgba(255,255,255,0.2); overflow:hidden; border-radius:2px}
+    .segment > .fill{height:100%; width:0%; background:#fff}
+    .controls{position:absolute; inset:0; display:flex; justify-content:space-between; align-items:center}
+    .controls > div{width:40%; height:100%}
+    .close-btn{position:absolute; top:18px; right:18px; color:#fff; font-size:20px; background:rgba(0,0,0,0.3); padding:8px 10px; border-radius:6px; cursor:pointer}
+    /* responsiveness */
+    @media (max-width:600px){
+      :root{--thumb-size:52px}
+    }
+  </style>
+</head>
+<body>
+
+  <h3>Stories</h3>
+  <div id="storiesRow" class="stories-row">
+    <label class="add-btn" title="Add story">
+      <input id="fileInput" type="file" accept="image/*" style="display:none">
+      <span style="font-size:28px; opacity:.6">＋</span>
+    </label>
+  </div>
+
+  <!-- viewer -->
+  <div id="viewer" class="viewer" aria-hidden="true">
+    <div class="progress-bar-row" id="progressRow"></div>
+    <img id="viewerImg" class="viewer-img" src="" alt="story"/>
+    <div class="close-btn" id="closeBtn">Close</div>
+    <div class="controls" id="controls">
+      <div id="leftTap"></div>
+      <div id="rightTap"></div>
+    </div>
+  </div>
+
+<script>
+/* CONFIG */
+const MAX_W = 1080;
+const MAX_H = 1920;
+const STORY_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const STORY_DISPLAY_MS = 3000;
+const STORAGE_KEY = 'stories_v1';
+
+/* UTIL: read files to Image and resize via canvas to max dims, output dataURL */
+function fileToResizedDataURL(file, maxW, maxH) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('file read error'));
+    fr.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        const ratio = Math.min(maxW / w, maxH / h, 1);
+        w = Math.round(w * ratio);
+        h = Math.round(h * ratio);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        // export as jpeg to reduce size
+        const dataURL = canvas.toDataURL('image/jpeg', 0.92);
+        resolve(dataURL);
+      };
+      img.onerror = () => reject(new Error('image load error'));
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
+/* Storage helpers */
+function loadStories() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch(e){ return [] }
+}
+function saveStories(arr){ localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)) }
+
+/* cleanup expired */
+function pruneExpired() {
+  const now = Date.now();
+  const arr = loadStories().filter(s => (now - s.createdAt) < STORY_LIFETIME_MS);
+  saveStories(arr);
+  return arr;
+}
+
+/* UI: render story thumbnails */
+const storiesRow = document.getElementById('storiesRow');
+function renderThumbnails() {
+  // clear except add button (first child)
+  while (storiesRow.children.length > 1) storiesRow.removeChild(storiesRow.lastChild);
+  const arr = pruneExpired().sort((a,b)=>b.createdAt-a.createdAt);
+  arr.forEach((s, idx) => {
+    const el = document.createElement('div');
+    el.className = 'thumb';
+    el.title = new Date(s.createdAt).toLocaleString();
+    const img = document.createElement('img');
+    img.src = s.data;
+    el.appendChild(img);
+    el.addEventListener('click', ()=>openViewer(arr, idx));
+    storiesRow.appendChild(el);
+  });
+}
+
+/* Add handler */
+document.getElementById('fileInput').addEventListener('change', async (e)=>{
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  try {
+    const dataURL = await fileToResizedDataURL(f, MAX_W, MAX_H);
+    const arr = loadStories();
+    arr.push({ id: Date.now() + Math.random().toString(36).slice(2,9), data: dataURL, createdAt: Date.now() });
+    saveStories(arr);
+    renderThumbnails();
+    e.target.value = '';
+  } catch(err){
+    alert('Unable to add story: '+err.message);
+  }
+});
+/* clicking plus opens file selector */
+document.querySelector('.add-btn').addEventListener('click', ()=>document.getElementById('fileInput').click());
+
+/* VIEWER logic */
+const viewer = document.getElementById('viewer');
+const viewerImg = document.getElementById('viewerImg');
+const progressRow = document.getElementById('progressRow');
+const closeBtn = document.getElementById('closeBtn');
+let currentStories = [];
+let currentIndex = 0;
+let segmentTimers = [];
+let autoAdvanceTimer = null;
+let startTime = null;
+
+function clearTimers(){
+  segmentTimers.forEach(t=>clearInterval(t));
+  segmentTimers = [];
+  if (autoAdvanceTimer) { clearTimeout(autoAdvanceTimer); autoAdvanceTimer=null; }
+}
+
+/* build progress segments */
+function buildProgressSegments(n){
+  progressRow.innerHTML = '';
+  for(let i=0;i<n;i++){
+    const seg = document.createElement('div'); seg.className='segment';
+    const fill = document.createElement('div'); fill.className='fill';
+    seg.appendChild(fill);
+    progressRow.appendChild(seg);
+  }
+}
+
+/* animate active segment over STORY_DISPLAY_MS using requestAnimationFrame */
+function animateSegment(index){
+  const segs = progressRow.querySelectorAll('.segment .fill');
+  segs.forEach((el, i)=> el.style.width = i < index ? '100%' : '0%');
+  const fill = segs[index];
+  if (!fill) return;
+  const start = performance.now();
+  function frame(now){
+    const elapsed = now - start;
+    const pct = Math.min(1, elapsed / STORY_DISPLAY_MS);
+    fill.style.width = (pct*100)+'%';
+    if (pct < 1) requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+/* show current index image and schedule advance */
+function showIndex(idx){
+  clearTimers();
+  if (idx < 0 || idx >= currentStories.length) { closeViewer(); return; }
+  currentIndex = idx;
+  const obj = currentStories[currentIndex];
+  viewerImg.src = obj.data;
+  animateSegment(currentIndex);
+  autoAdvanceTimer = setTimeout(()=> {
+    showIndex(currentIndex+1);
+  }, STORY_DISPLAY_MS);
+}
+
+/* open viewer with story array and start */
+function openViewer(arr, startIdx){
+  currentStories = arr;
+  buildProgressSegments(arr.length);
+  viewer.classList.add('show');
+  viewer.setAttribute('aria-hidden','false');
+  showIndex(startIdx);
+}
+
+/* close */
+function closeViewer(){
+  clearTimers();
+  viewer.classList.remove('show');
+  viewer.setAttribute('aria-hidden','true');
+}
+
+/* clicks to go prev/next */
+document.getElementById('leftTap').addEventListener('click', ()=> showIndex(currentIndex-1));
+document.getElementById('rightTap').addEventListener('click', ()=> showIndex(currentIndex+1));
+closeBtn.addEventListener('click', closeViewer);
+
+/* keyboard support */
+document.addEventListener('keydown', (e)=>{
+  if (!viewer.classList.contains('show')) return;
+  if (e.key === 'ArrowLeft') showIndex(currentIndex-1);
+  if (e.key === 'ArrowRight') showIndex(currentIndex+1);
+  if (e.key === 'Escape') closeViewer();
+});
+
+/* swipe support using touch events */
+let touchStartX = null;
+let touchStartY = null;
+const SWIPE_MIN = 40;
+viewer.addEventListener('touchstart', (ev)=>{
+  const t = ev.touches[0];
+  touchStartX = t.clientX; touchStartY = t.clientY;
+}, {passive:true});
+viewer.addEventListener('touchend', (ev)=>{
+  if (touchStartX === null) return;
+  const t = ev.changedTouches[0];
+  const dx = t.clientX - touchStartX;
+  const dy = t.clientY - touchStartY;
+  if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE_MIN){
+    if (dx < 0) showIndex(currentIndex+1); else showIndex(currentIndex-1);
+  }
+  touchStartX = null; touchStartY = null;
+}, {passive:true});
+
+/* remove expired periodically on focus (helps clear storage if user leaves) */
+window.addEventListener('focus', ()=>{
+  pruneExpired();
+  renderThumbnails();
+});
+
+/* initial render */
+renderThumbnails();
+</script>
+</body>
+</html>
